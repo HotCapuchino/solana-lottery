@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub enum LotteryState {
-    IN_PROGRESS,
     BETS_CLOSED,
+    IN_PROGRESS,
     LAUCNHED, 
     COMPLETED
 }
@@ -16,13 +16,11 @@ impl PartialEq for LotteryState {
     }
 }
 
-// Max number of participants is 1024
-// Max token balance is 4294967296 SOL
-// Size of account is 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct LotteryAccount {
-    pub participants: HashMap<Pubkey, f64>,
+    pub participants: HashMap<Pubkey, u64>,
     pub max_participants: u32,
     pub lottery_state: LotteryState,
-    pub winner: Option<Pubkey>
+    pub winner: Option<Pubkey>,
+    pub lottery_start: u64,
 }

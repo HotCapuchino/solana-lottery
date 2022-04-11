@@ -6,7 +6,7 @@ use solana_program::{
     pubkey::Pubkey
 };
 
-use crate::state::LotteryAccount;
+
 use crate::instructions::LotteryInstructions;
 use crate::instructions::{
     start_lottery,
@@ -24,13 +24,17 @@ pub fn process_instruction(
 ) -> ProgramResult { 
     let instruction = LotteryInstructions::unpack(instruction_data)?;
 
+    msg!("Recieved instruction: {:?}", instruction);
+
     return match instruction {
-        LotteryInstructions::StartLottery(max_participants) => start_lottery(program_id, accounts, max_participants),
+        LotteryInstructions::StartLottery(max_participants, unix_timestamp) => start_lottery(program_id, accounts, max_participants, unix_timestamp),
         LotteryInstructions::DonateInstruction(lamports_amount) => {
             // first we have to accept donation
             handle_donate_instruction(program_id, accounts, lamports_amount)?;
             // then need to modify main account state, add there participant and increase amount of sols
-            return update_main_acc_state(program_id, accounts, lamports_amount);
+            update_main_acc_state(program_id, accounts, lamports_amount)?;
+
+            Ok(())
         }, 
         LotteryInstructions::LaunchLottery(hashes) => launch_lottery(program_id, accounts, hashes),
         LotteryInstructions::CompleteLottery => complete_lottery(program_id, accounts),
