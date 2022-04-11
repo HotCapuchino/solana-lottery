@@ -4,10 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build:program": "cargo-build-bpf --manifest-path=./program/Cargo.toml --bpf-out-dir=./program/dist/program",
-    "start:validator": "solana-test-validator",
+    "build:program": "rm -rf ./program/dist && cargo-build-bpf --manifest-path=./program/Cargo.toml --bpf-out-dir=./program/dist/program",
+    "start:validator": "solana config set --url http://localhost:8899 && solana-test-validator",
+    "start logger": "solana logs",
     "deploy:program": "solana program deploy './program/dist/program/lottery.so'",
     "test:program": "",
+    "start:script": "ts-node ./script/src/index.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -21,12 +23,18 @@
   },
   "homepage": "https://github.com/HotCapuchino/solana-lottery#readme",
   "dependencies": {
+    "moment": "^2.29.2",
+    "mz": "^2.7.0",
     "ts-node": "^10.7.0",
-    "typescript": "^4.6.3"
+    "typescript": "^4.6.3",
+    "yaml": "^2.0.0"
   },
   "devDependencies": {
     "@solana/buffer-layout": "^4.0.0",
     "@solana/web3.js": "^1.37.1",
+    "@tsconfig/recommended": "^1.0.1",
+    "@types/bn.js": "^5.1.0",
+    "@types/mz": "^2.7.4",
     "@types/node": "^17.0.23",
     "borsh": "^0.7.0"
   }
