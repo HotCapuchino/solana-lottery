@@ -6,7 +6,7 @@
   "scripts": {
     "build:program": "rm -rf ./program/dist && cargo-build-bpf --manifest-path=./program/Cargo.toml --bpf-out-dir=./program/dist/program",
     "start:validator": "solana config set --url http://localhost:8899 && solana-test-validator",
-    "start logger": "solana logs",
+    "start:logger": "solana logs",
     "deploy:program": "solana program deploy './program/dist/program/lottery.so'",
     "test:program": "",
     "start:script": "ts-node ./script/src/index.ts",

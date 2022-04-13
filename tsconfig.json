@@ -1,12 +1,14 @@
 {
-    "extends": "@tsconfig/recommended/tsconfig.json",
     "ts-node": {
       "compilerOptions": {
-        "module": "commonjs"
+        "module": "commonjs",
+        "allowSyntheticDefaultImports": true,
+        "esModuleInterop": true,
       }
     },
     "allowJs": true,
     "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
     "isolatedModules": true,
     "noImplicitAny": true,
     "sourceMap": true,

@@ -1,12 +1,21 @@
 import { PublicKey } from "@solana/web3.js";
 import {deserialize, serialize} from 'borsh';
 import moment from "moment";
+import path from "path";
+import os from 'os';
+import { getConfig } from "./utils";
 
 export enum LotteryState {
     BETS_CLOSED,
     IN_PROGRESS,
     LAUCNHED, 
     COMPLETED
+}
+
+interface AccountConfig {
+  max_participants: number;
+  lottery_duration: number;
+  blockhases_num: number;
 }
 
 export interface LotteryStructInterface {
@@ -55,21 +64,31 @@ export const serializingSchema = new Map([
 ]);
 
 // only for test purposes
-export function testSerialization(): number {
-    const testMap: Map<Uint8Array, number> = new Map();  
-    for (let i = 0; i < 10; i++) {
-      testMap.set(new PublicKey(i * i).toBytes(), i);
-    }
+export function testSerialization(): Uint8Array {
+  const config = getConfig(path.resolve(
+    os.homedir(),
+    '.config', 
+    'solana', 
+    'cli',
+    'lottery', 
+    'config.yml'
+  )) as unknown as AccountConfig;
 
-    const testLotteryStruct = new LotteryStruct({
-                                    participants: testMap, 
-                                    max_participants: 10, 
-                                    lottery_state: LotteryState.IN_PROGRESS,
-                                    winner: new PublicKey(12).toBytes(),
-                                    lottery_start: moment().unix()
-                                  });
+  
+  const testMap: Map<Uint8Array, number> = new Map();  
+  for (let i = 0; i < config.max_participants; i++) {
+    testMap.set(new PublicKey(i * i).toBytes(), i);
+  }
+
+  const testLotteryStruct = new LotteryStruct({
+                                  participants: testMap, 
+                                  max_participants: config.max_participants, 
+                                  lottery_state: LotteryState.IN_PROGRESS,
+                                  winner: new PublicKey(12).toBytes(),
+                                  lottery_start: moment().unix()
+                                });
   const buffer = serialize(serializingSchema, testLotteryStruct);
 	const deserializedStruct = deserialize<LotteryStruct>(serializingSchema, LotteryStruct, Buffer.from(buffer));
-  console.log(deserializedStruct.lottery_start);
-  return buffer.length;
+  // console.log(deserializedStruct.lottery_start);
+  return buffer;
 }

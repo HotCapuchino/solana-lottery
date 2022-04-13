@@ -2,9 +2,8 @@ import moment from 'moment';
 import { fs } from 'mz';
 import yaml from 'yaml';
 import { Commitment, Connection, Keypair, PublicKey } from '@solana/web3.js';
-import { InstructionStruct } from './instructions';
 import { LotteryState, LotteryStruct, serializingSchema } from './state';
-import {deserialize, serialize} from 'borsh';
+import {serialize} from 'borsh';
 
 /**
  * Logging Errors and any logic of script
@@ -13,9 +12,9 @@ import {deserialize, serialize} from 'borsh';
  */
 export function writeLogs(message: string, error?: Error) {
     if (!error) {
-        console.log(`Script succesfully finished at ${moment().format("DD.MM.YYYY HH:mm:ss")}`);
+        console.log(`${message} at ${moment().format("DD.MM.YYYY HH:mm:ss")}`);
     } else {
-        // write exception to the logs
+        console.log(`Oops, an error occurrred! ${error}`);
     }
 }
 
