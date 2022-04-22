@@ -14,7 +14,7 @@ export function writeLogs(message: string, error?: Error) {
     if (!error) {
         console.log(`${message} at ${moment().format("DD.MM.YYYY HH:mm:ss")}`);
     } else {
-        console.log(`Oops, an error occurrred! ${error}`);
+        console.error(`Oops, an error occurrred! ${error}`);
     }
 }
 

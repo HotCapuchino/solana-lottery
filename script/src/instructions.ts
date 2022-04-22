@@ -1,5 +1,7 @@
 import {deserialize, serialize} from 'borsh';
 import moment from 'moment';
+import * as BufferLayout from '@solana/buffer-layout';
+
 // export interface InstructionStruct<T> {
 //     instructionCode: number,
 //     data?: T

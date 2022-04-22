@@ -1,8 +1,5 @@
 import { lifecycle } from "./lifecycle";
-import { testSerialization } from "./state";
-import { getConfig, writeLogs } from "./utils";
-import path from 'path';
-import os from 'os';
+import {  writeLogs } from "./utils";
 
 
 async function main() {
@@ -12,6 +9,11 @@ async function main() {
 
     await lifecycle.checkProgramWasDeployed();
 
+    lifecycle.checkTimeOrParticipants()
+    .catch(() => console.log('no need to start lottery!'));
+
+    await lifecycle.testDonateInstruction();
+
     // lifecycle.checkTimeOrParticipants().then(async () => {
     //     await lifecycle.launchLottery();
     // }).catch(() => {
@@ -19,25 +21,11 @@ async function main() {
     // });
 }
 
-try {
-    const buf = testSerialization();
-    console.log(buf.buffer);
-    // getConfig(path.resolve(
-    //     os.homedir(),
-    //     '.config', 
-    //     'solana', 
-    //     'cli',
-    //     'lottery', 
-    //     'config.yml'
-    // )).then((obj) => console.log(obj));
-} catch (e) {
-    console.log('error is ', e);
-}
-
-// main().then(() => {
-//     writeLogs("Script was successfully finished");
-//     process.exit();
-// }).catch((e: Error) => {
-//     writeLogs("Error occured during script execution!", e);
-//     process.exit(-1);
-// });
+main().then(() => {
+    writeLogs("Script was successfully finished");
+    process.exit();
+})
+.catch((e: Error) => {
+    writeLogs("Error occured during script execution!", e);
+    process.exit(-1);
+});

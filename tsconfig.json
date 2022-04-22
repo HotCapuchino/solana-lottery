@@ -4,7 +4,12 @@
         "module": "commonjs",
         "allowSyntheticDefaultImports": true,
         "esModuleInterop": true,
-      }
+        "sourceMap": true,
+        "outDir": "script/build",
+        "outFile": "script/build/bundle.js",
+      },
+      "include": ["script/src/**/*.ts"],
+      "exclude": ["node_modules"]
     },
     "allowJs": true,
     "allowSyntheticDefaultImports": true,
@@ -16,7 +21,11 @@
       "declaration": true,
       "moduleResolution": "node",
       "module": "es2015",
-      "types": ["node"]
+      "types": ["node"],
+      // "baseUrl": "./",
+      // "allowSyntheticDefaultImports": true,
+      // "sourceMap": true,
+      // "outDir": "script/build",
     },
     "include": ["src/client/**/*"],
     "exclude": ["node_modules"]

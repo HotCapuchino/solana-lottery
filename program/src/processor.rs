@@ -2,7 +2,6 @@ use solana_program::{
     account_info::{AccountInfo},
     entrypoint::ProgramResult,
     msg,
-    program_error::ProgramError,
     pubkey::Pubkey
 };
 
@@ -22,6 +21,8 @@ pub fn process_instruction(
     accounts: &[AccountInfo], // All accounts required to process the instruction
     instruction_data: &[u8],  // Serialized instruction-specific data
 ) -> ProgramResult { 
+    msg!("Start program");
+
     let instruction = LotteryInstructions::unpack(instruction_data)?;
 
     msg!("Recieved instruction: {:?}", instruction);
@@ -38,6 +39,5 @@ pub fn process_instruction(
         }, 
         LotteryInstructions::LaunchLottery(hashes) => launch_lottery(program_id, accounts, hashes),
         LotteryInstructions::CompleteLottery => complete_lottery(program_id, accounts),
-        _ => Err(ProgramError::InvalidInstructionData),
     };
 }

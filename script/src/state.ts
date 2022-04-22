@@ -1,5 +1,5 @@
 import { PublicKey } from "@solana/web3.js";
-import {deserialize, serialize} from 'borsh';
+import {deserialize, deserializeUnchecked, serialize} from 'borsh';
 import moment from "moment";
 import path from "path";
 import os from 'os';
@@ -19,31 +19,31 @@ interface AccountConfig {
 }
 
 export interface LotteryStructInterface {
-    participants: Map<Uint8Array, number>
     max_participants: number;
     lottery_state: LotteryState;
     winner: Uint8Array;
     lottery_start: number;
+    participants: Map<Uint8Array, number>
 }
 
 export class LotteryStruct {
-    participants: Map<Uint8Array, number>
     max_participants: number;
     lottery_state: LotteryState;
     winner: Uint8Array;
     lottery_start: number;
+    participants: Map<Uint8Array, number>
 
-    constructor({
-        	participants, 
+    constructor({ 
           max_participants, 
           lottery_state, 
           winner,
-          lottery_start }: LotteryStructInterface) {
-        this.participants = participants;
+          lottery_start,
+          participants, }: LotteryStructInterface) {
         this.max_participants = max_participants;
         this.lottery_state = lottery_state;
         this.winner = winner;
         this.lottery_start = lottery_start;
+        this.participants = participants;
     }
 }
 
@@ -53,19 +53,20 @@ export const serializingSchema = new Map([
     {
       kind: "struct",
       fields: [
-        ["participants", {kind: "map", key: ['u8', 32], value: "u64"}],
-        ["max_participants", "u32"],
-        ["lottery_state", "u8"],
-        ["winner", ['u8', 32]],
-        ["lottery_start", "u64"],
+        ["max_participants", "u32"], // 4 bytes
+        ["lottery_state", "u8"], // 1 byte
+        ["winner", ['u8', 32]], // 32 bytes
+        ["lottery_start", "u64"], // 8 bytes
+        ["participants", {kind: "map", key: ['u8', 32], value: "u64"}], // 40 bytes per entry(key:value) + 4 bytes capacity
+        // everything except participants map takes 45 bytes in total
       ]
     }
   ]
 ]);
 
 // only for test purposes
-export function testSerialization(): Uint8Array {
-  const config = getConfig(path.resolve(
+export async function testSerialization(): Promise<Uint8Array> {
+  const config = await getConfig(path.resolve(
     os.homedir(),
     '.config', 
     'solana', 
@@ -74,7 +75,8 @@ export function testSerialization(): Uint8Array {
     'config.yml'
   )) as unknown as AccountConfig;
 
-  
+  // console.log('config', config);
+  // console.log('max participants', config.max_participants);
   const testMap: Map<Uint8Array, number> = new Map();  
   for (let i = 0; i < config.max_participants; i++) {
     testMap.set(new PublicKey(i * i).toBytes(), i);
@@ -88,7 +90,10 @@ export function testSerialization(): Uint8Array {
                                   lottery_start: moment().unix()
                                 });
   const buffer = serialize(serializingSchema, testLotteryStruct);
+  console.log(buffer.byteLength);
 	const deserializedStruct = deserialize<LotteryStruct>(serializingSchema, LotteryStruct, Buffer.from(buffer));
-  // console.log(deserializedStruct.lottery_start);
+  console.log('deserialized', deserializedStruct);
   return buffer;
 }
+
+// export function testMapDesearilization

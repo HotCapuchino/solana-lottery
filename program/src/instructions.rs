@@ -1,16 +1,23 @@
-use crate::state::LotteryAccount;
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::{
     account_info::{AccountInfo, next_account_info},
     entrypoint::ProgramResult,
     program_error::ProgramError,
     msg,
-    program::invoke,
+    program::{invoke, invoke_signed},
     pubkey::Pubkey,
-    system_instruction::transfer,
+    system_instruction::transfer, 
+    sysvar::{rent::Rent, Sysvar},
+    system_instruction
 };
-use crate::state::LotteryState;
+use crate::state::{LotteryState, LOTTERY_SEED, LotteryAccount, DEFAULT_WINNER_KEY};
 use std::collections::HashMap;
+use crate::utils::{
+    check_for_lottery_availability, 
+    calculate_lottery_account_size,
+    deserialize,
+    calculate_random_number
+};
 
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -23,25 +30,45 @@ pub enum LotteryInstructions {
 
 impl LotteryInstructions {
     pub fn unpack(input: &[u8]) -> Result<Self, ProgramError> {
+        msg!("Unpacking instruction data!");
+
         let (inst_code, rest ) = input.split_first().ok_or(ProgramError::InvalidInstructionData)?;
+
+        msg!("Instruction code: {}", inst_code);
 
         return match inst_code {
             0 => {
-                if rest.len() != 4 {
+                if rest.len() != 12 {
                     return Err(ProgramError::InvalidInstructionData);
                 }
 
+                msg!("Processing start lottery instruction");
+
                 let max_participants: Result<[u8; 4], _> = rest[..4].try_into();
+
+                if max_participants.is_ok() {
+                    msg!("Max_participants: {}", u32::from_le_bytes(max_participants.unwrap()));
+                }
+
                 let unix_timestamp: Result<[u8; 8], _> = rest[4..12].try_into();
+
+                if unix_timestamp.is_ok() {
+                    msg!("Unix timestamp: {}", u64::from_le_bytes(unix_timestamp.unwrap()));
+                }
+                
                 if max_participants.is_ok() && unix_timestamp.is_ok() {
                     return Ok(Self::StartLottery(
                                 u32::from_le_bytes(max_participants.unwrap()),
                                 u64::from_le_bytes(unix_timestamp.unwrap()))
                     );
                 }
+
+                msg!("{}, {}",max_participants.is_ok(), unix_timestamp.is_ok());
                 return Err(ProgramError::InvalidInstructionData);
             },
             1 => {
+                msg!("Processing donate instruction");
+
                 if rest.len() != 8 {
                     return Err(ProgramError::InvalidInstructionData);
                 }
@@ -52,6 +79,7 @@ impl LotteryInstructions {
                     let amount = u64::from_le_bytes(val.unwrap());
                     return Ok(Self::DonateInstruction(amount));
                 } else {
+                    msg!("{}", val.is_ok());
                     return Err(ProgramError::InvalidInstructionData);
                 }
             },
@@ -68,14 +96,15 @@ impl LotteryInstructions {
 /// Accounts expected:
 /// 0. `[signer]` Main account, owner of program
 /// 1. `[writable]` PDA account
-/// 2. `[]` System program
+/// 2. `[]` Rent sysvar
+/// 3. `[]` System program
 pub fn start_lottery(program_id: &Pubkey, accounts: &[AccountInfo], max_participants: u32, unix_timestamp: u64) -> ProgramResult {
     let accounts_iter = &mut accounts.iter();
 
     let main_acc = next_account_info(accounts_iter)?;
     // checking main account
     if !main_acc.is_signer {
-        return Err(ProgramError::InvalidAccountData);
+        return Err(ProgramError::MissingRequiredSignature);
     }
 
     let pda_acc = next_account_info(accounts_iter)?;
@@ -84,15 +113,53 @@ pub fn start_lottery(program_id: &Pubkey, accounts: &[AccountInfo], max_particip
         return Err(ProgramError::IncorrectProgramId);
     }
 
-    let mut lottery_account = LotteryAccount::try_from_slice(&pda_acc.data.borrow())?;
-    
+    let rent_sysvar = next_account_info(accounts_iter)?;
+    let system_program = next_account_info(accounts_iter)?;
+
+    let (lottery_pubkey, lottery_bump) = LotteryAccount::get_lottery_pubkey(program_id);
+    if !LotteryAccount::check_pubkey(program_id, pda_acc.key) {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    msg!("Pda acc data before {:?}", &pda_acc.data.borrow());
+
+    // if data is empty, we need to create PDA account first
+    if pda_acc.data_is_empty() {
+        msg!("PDA data is empty! Creating PDA account!");
+        let space: u64 = calculate_lottery_account_size(max_participants);
+        let rent = &Rent::from_account_info(rent_sysvar)?;
+        let lamports = rent.minimum_balance(space as usize);
+        let signer_seeds: &[&[_]] = &[LOTTERY_SEED.as_bytes(), &[lottery_bump]];
+
+        msg!("Required space for account is {}", space);
+
+        invoke_signed(
+            &system_instruction::create_account(
+                main_acc.key,
+                &lottery_pubkey,
+                lamports,
+                space,
+                program_id
+            ), 
+            &[main_acc.clone(), pda_acc.clone(), system_program.clone()], 
+            &[&signer_seeds]
+        )?;
+    }
+
+    msg!("Pda acc data after {:?}", &pda_acc.data.borrow());
+
+    let mut lottery_account = deserialize(&pda_acc.data.borrow()).unwrap();
+
     msg!("Lottery account state before initializing: {:?}", lottery_account);
 
-    lottery_account.winner = None;
-    lottery_account.participants = HashMap::new();
+    let new_participants_map: HashMap<Pubkey, u64> = HashMap::new();
+    lottery_account.winner = DEFAULT_WINNER_KEY;
+    lottery_account.participants = new_participants_map;
+
     if lottery_account.max_participants != max_participants {
         lottery_account.max_participants = max_participants;
     }
+
     lottery_account.lottery_state = LotteryState::IN_PROGRESS;
     lottery_account.lottery_start = unix_timestamp;
 
@@ -140,20 +207,6 @@ pub fn handle_donate_instruction(program_id: &Pubkey, accounts: &[AccountInfo], 
     Ok(())
 }
 
-/// checking whether new participant can join the lottery
-pub fn check_for_lottery_availability(pda_account: &AccountInfo) -> ProgramResult {
-    let lottery_data = LotteryAccount::try_from_slice(&pda_account.data.borrow())?;
-
-    msg!("Max participants in lottery: {:?}", lottery_data.max_participants);
-
-    if lottery_data.lottery_state != LotteryState::IN_PROGRESS || 
-        lottery_data.participants.len() as u32 >= lottery_data.max_participants {
-        return Err(ProgramError::Custom(100));  
-    }
-
-    Ok(()) 
-}
-
 /// Accounts expected:
 /// 0. `[signer, writable]` Debit lamports from this account
 /// 1. `[writable]` Credit lamports to this account, must be PDA account
@@ -173,7 +226,7 @@ pub fn update_main_acc_state(program_id: &Pubkey, accounts: &[AccountInfo], lamp
         return Err(ProgramError::IncorrectProgramId);
     }
 
-    let mut lottery_account = LotteryAccount::try_from_slice(&pda_acc.data.borrow())?;
+    let mut lottery_account = deserialize(&pda_acc.data.borrow()).unwrap();
 
     // checking whether this user has already donated 
     if lottery_account.participants.contains_key(participant_acc.key) {
@@ -217,16 +270,16 @@ pub fn complete_lottery(program_id: &Pubkey, accounts: &[AccountInfo]) -> Progra
         return Err(ProgramError::IncorrectProgramId);
     }
 
-    let mut lottery_account = LotteryAccount::try_from_slice(&pda_acc.data.borrow())?;
+    let mut lottery_account = deserialize(&pda_acc.data.borrow()).unwrap();
 
     // if complete lottery instruction was called before launch lottery or winner wasn't chosen
-    if lottery_account.winner.is_none() {
+    if lottery_account.winner == DEFAULT_WINNER_KEY {
         return Err(ProgramError::InvalidAccountData);
     }
 
     let winner_acc = next_account_info(accounts_iter)?;
     // checking winner account
-    if !winner_acc.is_writable || winner_acc.key.clone() != lottery_account.winner.unwrap() {
+    if !winner_acc.is_writable || winner_acc.key.clone() != lottery_account.winner {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -235,18 +288,26 @@ pub fn complete_lottery(program_id: &Pubkey, accounts: &[AccountInfo]) -> Progra
     let FEE: u64 = ((pda_acc.lamports.borrow().clone() as f64) * 0.01) as u64;
     let winner_lamports = pda_acc.lamports.borrow().clone() - FEE;
 
+    let (_, lottery_bump) = LotteryAccount::get_lottery_pubkey(program_id);
+    if !LotteryAccount::check_pubkey(program_id, pda_acc.key) {
+        return Err(ProgramError::InvalidArgument);
+    }
+    let signer_seeds: &[&[_]] = &[LOTTERY_SEED.as_bytes(), &[lottery_bump]];
+
     // transfer lamports to winner account
-    invoke(
+    invoke_signed(
         &transfer(pda_acc.key, winner_acc.key, winner_lamports),
-        &[pda_acc.clone(), winner_acc.clone()]
+        &[pda_acc.clone(), winner_acc.clone()],
+        &[&signer_seeds]
     )?;
 
     msg!("Transfered winner payment from: {:?} to: {:?}", pda_acc.key, winner_acc.key);
 
     // transfer fees to main account
-    invoke(
+    invoke_signed(
         &transfer(pda_acc.key, main_acc.key, FEE),
-        &[pda_acc.clone(), main_acc.clone()]
+        &[pda_acc.clone(), main_acc.clone()],
+        &[&signer_seeds]
     )?;
 
     msg!("Transfered fee payment from: {:?} to: {:?}", pda_acc.key, main_acc.key);
@@ -276,11 +337,9 @@ pub fn launch_lottery(program_id: &Pubkey, accounts: &[AccountInfo], hashes: Vec
         return Err(ProgramError::IncorrectProgramId);
     }
 
-    let mut lottery_account = LotteryAccount::try_from_slice(&pda_acc.data.borrow())?;
+    let mut lottery_account = deserialize(&pda_acc.data.borrow()).unwrap();
 
-    // let winner_num: usize = calculate_random_number(&hashes, lottery_account.participants.len().try_into().unwrap());
-    /// just for test purposes it's equal to 1
-    let winner_num = 1;
+    let winner_num: usize = calculate_random_number(&hashes, lottery_account.participants.len().try_into().unwrap());
 
     msg!("Winner index is {}", winner_num);
     let participants_pubkeys: Vec<Pubkey> = lottery_account.participants
@@ -290,7 +349,7 @@ pub fn launch_lottery(program_id: &Pubkey, accounts: &[AccountInfo], hashes: Vec
                                     .collect();
     let winner_pubkey = participants_pubkeys.get(winner_num);
     if winner_pubkey.is_some() {
-        lottery_account.winner = Some(winner_pubkey.unwrap().clone());
+        lottery_account.winner = winner_pubkey.unwrap().clone();
         lottery_account.lottery_state = LotteryState::LAUCNHED;
         msg!("Winner pubkey is {:?}", lottery_account.winner);
     };
@@ -300,75 +359,4 @@ pub fn launch_lottery(program_id: &Pubkey, accounts: &[AccountInfo], hashes: Vec
     lottery_account.serialize(&mut &mut pda_acc.data.borrow_mut()[..])?;
 
     Ok(())
-}
-
-/// used to calculate random winner number from last 5 blockhashes of solana network
-fn calculate_random_number(input: &[u8], pool_size: u32) -> usize {
-    let general_len = input.len();
-    let hashes_amount = (general_len as f32 / 16.0).floor() as usize; 
-    let single_len = general_len / if (hashes_amount) > 0 { hashes_amount } else { 1 };
-    let mut sum: u128 = 0;
-    let mut start = 0;
-    let mut end = 0;
-
-    for i in 0..hashes_amount {
-        start = single_len * i;
-        end = single_len * (i + 1);
-        let current_slice: &[u8];
-        if input.len() >= end {
-            current_slice = &input[start..end];
-        } else {
-            current_slice = &input[start..];
-        }
-
-        let batch_size: usize = 4;
-        if current_slice.len() < 16 {
-
-            let difference = current_slice.len() - 16;
-            let extra_bytes: Vec<u8> = vec![0, difference.try_into().unwrap()];
-            let new_slice: Result<[u8; 16], _> = [current_slice, &extra_bytes].concat().try_into();
-
-            if new_slice.is_ok() {
-                sum += u128::from_le_bytes(new_slice.unwrap()) % (pool_size as u128);
-            }
-        } 
-
-        if current_slice.len() >= 16 {
-            let mut intervals_remain = current_slice.len() - 16;
-            let interval_size = if ((current_slice.len() - 16) / 3) >= 1 {(current_slice.len() - 16) / 3} else { 1 };
-            let mut byte_vec: Vec<u8> = current_slice[..batch_size].to_vec();
-            let mut last_index = batch_size;
-
-            for _j in 0..3 {
-                if intervals_remain > 0 {
-                    if intervals_remain - interval_size > 0 {
-                        last_index += interval_size;
-                        intervals_remain -= interval_size;
-                    } else {
-                        last_index += intervals_remain;
-                        intervals_remain = 0;
-                    }
-
-                    if i % 2 == 0 {
-                        byte_vec = [byte_vec, (current_slice[last_index..(last_index + batch_size)]).to_vec()].concat();
-                    } else {
-                        byte_vec = [(current_slice[last_index..(last_index + batch_size)]).to_vec(), byte_vec].concat();
-                    }
-                } else {
-                    if i % 2 != 0 {
-                        byte_vec = [byte_vec, (current_slice[(last_index + 1)..(last_index + 1 + batch_size)]).to_vec()].concat();
-                    } else {
-                        byte_vec = [(current_slice[(last_index + 1)..(last_index + 1 + batch_size)]).to_vec(), byte_vec].concat();
-                    }
-                }
-            }
-
-            let byte_array: Result<[u8; 16], _> = byte_vec.try_into();
-            if byte_array.is_ok() {
-                sum += u128::from_le_bytes(byte_array.unwrap()) % (pool_size as u128);
-            }
-        } 
-    }
-
-    (sum % (pool_size as u128)) as usize
 }
