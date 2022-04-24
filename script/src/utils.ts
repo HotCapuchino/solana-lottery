@@ -4,6 +4,7 @@ import yaml from 'yaml';
 import { Commitment, Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { LotteryState, LotteryStruct, serializingSchema } from './state';
 import {serialize} from 'borsh';
+import {eventEmitter} from './eventsHandler';
 
 /**
  * Logging Errors and any logic of script
@@ -105,19 +106,23 @@ export async function getSizeOfAccount(CONFIG_FILE_PATH: string): Promise<number
  * @param blockhases_num - number of blockhashes to collect
  * @returns array of blockhashes
  */
-export async function getLastBlockHashes(connection: Connection, blockhases_num: number): Promise<string[]> {
+export function startFetchingLastBlockHashes(connection: Connection, blockhases_num: number): NodeJS.Timeout {
     const blockType: Commitment = 'finalized';
     let hashes: string[] = [];
 
     const intervalID = setInterval(async () => {
-        if (hashes.length === blockhases_num) {
+        if (hashes.length >= blockhases_num) {
             clearInterval(intervalID);
+            // firing blockhashes event
+            eventEmitter.emitBlockHashesEvent({blockhashes: hashes});
         }
-        let hash = await connection.getLatestBlockhash(blockType)
+        let hash = await connection.getLatestBlockhash(blockType);
+        console.log('fetched hash is:', hash.blockhash, 'hashes length', hashes.length);
+
         if (!hashes.includes(hash.blockhash)) {
             hashes.push(hash.blockhash);
         }
-    }, 0);
+    }, 1000);
 
-    return hashes;
+    return intervalID;
 }

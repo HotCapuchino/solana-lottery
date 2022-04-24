@@ -1,5 +1,5 @@
 import { PublicKey } from "@solana/web3.js";
-import {deserialize, deserializeUnchecked, serialize} from 'borsh';
+import {deserialize, serialize} from 'borsh';
 import moment from "moment";
 import path from "path";
 import os from 'os';
@@ -75,8 +75,6 @@ export async function testSerialization(): Promise<Uint8Array> {
     'config.yml'
   )) as unknown as AccountConfig;
 
-  // console.log('config', config);
-  // console.log('max participants', config.max_participants);
   const testMap: Map<Uint8Array, number> = new Map();  
   for (let i = 0; i < config.max_participants; i++) {
     testMap.set(new PublicKey(i * i).toBytes(), i);
@@ -95,5 +93,3 @@ export async function testSerialization(): Promise<Uint8Array> {
   console.log('deserialized', deserializedStruct);
   return buffer;
 }
-
-// export function testMapDesearilization

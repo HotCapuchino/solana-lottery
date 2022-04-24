@@ -1,4 +1,4 @@
-use std::mem::size_of;
+use std::{mem::size_of};
 
 use solana_program::{
     account_info::AccountInfo,
@@ -14,7 +14,9 @@ use crate::state::{LotteryState, LotteryAccount, LOTTERY_SEED};
 
 /// checking whether new participant can join the lottery
 pub fn check_for_lottery_availability(pda_account: &AccountInfo) -> ProgramResult {
-    let lottery_data:LotteryAccount = deserialize(&pda_account.data.borrow())?;
+    msg!("Acc data: {:?}", &pda_account.data.borrow());
+
+    let lottery_data: LotteryAccount = deserialize(&pda_account.data.borrow())?;
 
     msg!("Max participants in lottery: {:?}", lottery_data.max_participants);
 
@@ -53,6 +55,7 @@ pub fn calculate_lottery_account_size(max_participants: u32) -> u64 {
 /// first 49 bytes - determined account data, then goes HashMap (key, value) pairs
 /// each pair - 40 bytes
 pub fn deserialize(input: &[u8]) -> Result<LotteryAccount, ProgramError> {
+    msg!("Input bytes {:?}", input);
     let mut stopping_index = 0; 
     let mut i = 0;
     let empty_pubkey = Pubkey::new_from_array([0; 32]);
@@ -75,6 +78,7 @@ pub fn deserialize(input: &[u8]) -> Result<LotteryAccount, ProgramError> {
     }
 
     let lottery_account: LotteryAccount;
+    msg!("Stopping index {}", stopping_index);
     if stopping_index == 0 {
         lottery_account = LotteryAccount::try_from_slice(&input)?;
     } else {
@@ -82,6 +86,56 @@ pub fn deserialize(input: &[u8]) -> Result<LotteryAccount, ProgramError> {
     }
      
     Ok(lottery_account)
+}
+
+/// calculate overall amount of lampotrs, that has been donated
+pub fn calculate_overall_donations(lottery_account: &LotteryAccount) -> Option<u64> {
+    let mut sum: u64 = 0;
+    for (_, bet) in  lottery_account.participants.iter() {
+        sum += bet.clone();
+    }
+
+    if sum > 0 {
+        return Option::Some(sum);
+    }
+
+    Option::None
+}
+
+/// checking if instructions are called in correct order
+pub fn check_lottery_lifecycle(instruction_code: u32, lottery_account: Option<&LotteryAccount>) -> ProgramResult {
+    match instruction_code {
+        0 => {
+            if lottery_account.is_some() {
+                let unwrapped = lottery_account.unwrap();
+                if (unwrapped.lottery_state == LotteryState::IN_PROGRESS) ||  (unwrapped.lottery_state == LotteryState::LAUCNHED) {
+                     return Err(ProgramError::Custom(300));
+                }
+            }
+
+            return Ok(());
+        }
+        1 | 2 | 3 => {
+            if lottery_account.is_none() { return Err(ProgramError::Custom(300)) }
+
+            let unwrapped = lottery_account.unwrap();
+            match instruction_code {
+                1 => { if unwrapped.lottery_state != LotteryState::IN_PROGRESS { return Err(ProgramError::Custom(300)) } }
+                2 => { 
+                    if unwrapped.lottery_state != LotteryState::IN_PROGRESS && unwrapped.lottery_state != LotteryState::BETS_CLOSED {
+                        return Err(ProgramError::Custom(300)) 
+                    } 
+                }
+                3 => { if unwrapped.lottery_state != LotteryState::LAUCNHED { return Err(ProgramError::Custom(300)) } }
+                _ => return Err(ProgramError::Custom(300))
+            }
+
+            return Ok(());
+        }
+        _ => return Err(ProgramError::Custom(300))
+    }
+
+    Ok(())
 }
 
 /// used to calculate random winner number from last 5 blockhashes of solana network

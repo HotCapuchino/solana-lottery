@@ -1,11 +1,5 @@
-import {deserialize, serialize} from 'borsh';
+import {serialize} from 'borsh';
 import moment from 'moment';
-import * as BufferLayout from '@solana/buffer-layout';
-
-// export interface InstructionStruct<T> {
-//     instructionCode: number,
-//     data?: T
-// };
 
 class Instruction {
     code: number;
@@ -13,6 +7,10 @@ class Instruction {
     constructor(code?: number) {
         this.code = code !== null ? code : 0;
     }
+
+    static instructionSchema = new Map([
+      [Instruction, { kind: 'struct', fields: [['code', 'u8']] }]
+    ]);
 }
 
 class StartLotteryInstruction extends Instruction {
@@ -84,23 +82,49 @@ class DonateInstruction extends Instruction {
   ]);
 }
 
+/**
+ * Creating Launch Lottery Instruction
+ * @param hashes - list with recent blockhashes
+ * @returns - buffered transaction data
+ */
 export function createLaunchLotteryInstruction(hashes: string | string[]): Buffer {
   if (typeof hashes !== 'string') {
     hashes = hashes.join('');
   }
+  console.log(`result hash string is ${hashes}`)
   const launchLotteryInstruction = new LaunchLotteryInstruction(hashes);
   const serialized = serialize(LaunchLotteryInstruction.launchLotteryInstructionSchema, launchLotteryInstruction);
   return Buffer.from(serialized);
 }
 
+/**
+ * Creating Start Lottery Instruction
+ * @param max_participants - max amount of lottery participants
+ * @returns - buffered transaction data
+ */
 export function createStartLotteryInstruction(max_participants: number): Buffer {
   const startLotteryInstruction = new StartLotteryInstruction(max_participants);
   const serialized = serialize(StartLotteryInstruction.startLotterySerializationSchema, startLotteryInstruction);
   return Buffer.from(serialized);
 }
 
+/**
+ * Creating test Donation Lottery Instruction
+ * @param amount - amount of lamports to be donated
+ * @returns - buffered transaction data
+ */
 export function createDonateInstruction(amount: number): Buffer {
   const donateInstruction = new DonateInstruction(amount);
   const serialized = serialize(DonateInstruction.donateInstructionSchema, donateInstruction);
+  return Buffer.from(serialized);
+}
+
+/**
+ * Creating Complete Lottery Instruction
+ * @returns buffered transaction data
+ */
+export function createCompleteLotteryInstruction(): Buffer {
+  const completeInstruction = new Instruction(3);
+  const serialized = serialize(Instruction.instructionSchema, completeInstruction);
   return Buffer.from(serialized);
 }

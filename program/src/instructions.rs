@@ -16,7 +16,9 @@ use crate::utils::{
     check_for_lottery_availability, 
     calculate_lottery_account_size,
     deserialize,
-    calculate_random_number
+    calculate_random_number,
+    calculate_overall_donations,
+    check_lottery_lifecycle
 };
 
 
@@ -99,6 +101,8 @@ impl LotteryInstructions {
 /// 2. `[]` Rent sysvar
 /// 3. `[]` System program
 pub fn start_lottery(program_id: &Pubkey, accounts: &[AccountInfo], max_participants: u32, unix_timestamp: u64) -> ProgramResult {
+    msg!("Executing start lottery instruction!");
+
     let accounts_iter = &mut accounts.iter();
 
     let main_acc = next_account_info(accounts_iter)?;
@@ -150,6 +154,11 @@ pub fn start_lottery(program_id: &Pubkey, accounts: &[AccountInfo], max_particip
 
     let mut lottery_account = deserialize(&pda_acc.data.borrow()).unwrap();
 
+    let lifecycle_check = check_lottery_lifecycle(0, Option::Some(&lottery_account));
+    if lifecycle_check.is_err() {
+        // return lifecycle_check;
+    }
+
     msg!("Lottery account state before initializing: {:?}", lottery_account);
 
     let new_participants_map: HashMap<Pubkey, u64> = HashMap::new();
@@ -175,6 +184,8 @@ pub fn start_lottery(program_id: &Pubkey, accounts: &[AccountInfo], max_particip
 /// 1. `[writable]` Credit lamports to this account, must be PDA account
 /// 2. `[]` System program
 pub fn handle_donate_instruction(program_id: &Pubkey, accounts: &[AccountInfo], lamports_amount: u64) -> ProgramResult {
+    msg!("Executing donate instruction!");
+
     let accounts_iter = &mut accounts.iter();
 
     let participant_acc = next_account_info(accounts_iter)?;
@@ -192,10 +203,10 @@ pub fn handle_donate_instruction(program_id: &Pubkey, accounts: &[AccountInfo], 
     }
 
     // checking if it's still available to donate sol
-    let lottery_availability = check_for_lottery_availability(pda_acc);
-    if !lottery_availability.is_ok() {
-        return lottery_availability;
-    }
+    // let lottery_availability = check_for_lottery_availability(pda_acc);
+    // if !lottery_availability.is_ok() {
+    //     return lottery_availability;
+    // }
 
     invoke(
         &transfer(participant_acc.key, pda_acc.key, lamports_amount),
@@ -228,6 +239,11 @@ pub fn update_main_acc_state(program_id: &Pubkey, accounts: &[AccountInfo], lamp
 
     let mut lottery_account = deserialize(&pda_acc.data.borrow()).unwrap();
 
+    let lifecycle_check = check_lottery_lifecycle(1, Option::Some(&lottery_account));
+    if lifecycle_check.is_err() {
+        return lifecycle_check;
+    }
+
     // checking whether this user has already donated 
     if lottery_account.participants.contains_key(participant_acc.key) {
         let amount_donated = lottery_account.participants[participant_acc.key] + lamports_amount;
@@ -256,73 +272,8 @@ pub fn update_main_acc_state(program_id: &Pubkey, accounts: &[AccountInfo], lamp
 /// 2. `[writable]` Winner account, credit lamports here
 /// 3. `[]` System program
 pub fn complete_lottery(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
-    let accounts_iter = &mut accounts.iter();
+    msg!("Executing complete lottery instruction!");
 
-    let main_acc = next_account_info(accounts_iter)?;
-    // checking main account
-    if !main_acc.is_signer && !main_acc.is_writable {
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    let pda_acc = next_account_info(accounts_iter)?;
-    // checking pda account
-    if !pda_acc.is_writable && pda_acc.owner != program_id {
-        return Err(ProgramError::IncorrectProgramId);
-    }
-
-    let mut lottery_account = deserialize(&pda_acc.data.borrow()).unwrap();
-
-    // if complete lottery instruction was called before launch lottery or winner wasn't chosen
-    if lottery_account.winner == DEFAULT_WINNER_KEY {
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    let winner_acc = next_account_info(accounts_iter)?;
-    // checking winner account
-    if !winner_acc.is_writable || winner_acc.key.clone() != lottery_account.winner {
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    lottery_account.lottery_state = LotteryState::COMPLETED;
-
-    let FEE: u64 = ((pda_acc.lamports.borrow().clone() as f64) * 0.01) as u64;
-    let winner_lamports = pda_acc.lamports.borrow().clone() - FEE;
-
-    let (_, lottery_bump) = LotteryAccount::get_lottery_pubkey(program_id);
-    if !LotteryAccount::check_pubkey(program_id, pda_acc.key) {
-        return Err(ProgramError::InvalidArgument);
-    }
-    let signer_seeds: &[&[_]] = &[LOTTERY_SEED.as_bytes(), &[lottery_bump]];
-
-    // transfer lamports to winner account
-    invoke_signed(
-        &transfer(pda_acc.key, winner_acc.key, winner_lamports),
-        &[pda_acc.clone(), winner_acc.clone()],
-        &[&signer_seeds]
-    )?;
-
-    msg!("Transfered winner payment from: {:?} to: {:?}", pda_acc.key, winner_acc.key);
-
-    // transfer fees to main account
-    invoke_signed(
-        &transfer(pda_acc.key, main_acc.key, FEE),
-        &[pda_acc.clone(), main_acc.clone()],
-        &[&signer_seeds]
-    )?;
-
-    msg!("Transfered fee payment from: {:?} to: {:?}", pda_acc.key, main_acc.key);
-    msg!("Lottery account after changing state {:?}", lottery_account);
-
-    lottery_account.serialize(&mut &mut pda_acc.data.borrow_mut()[..])?;
-
-    Ok(())
-}
-
-/// Accounts expected:
-/// 0. `[signer]` Main account, owner of program
-/// 1. `[writable]` PDA account to transfer lamports from
-/// 2. `[]` System program
-pub fn launch_lottery(program_id: &Pubkey, accounts: &[AccountInfo], hashes: Vec<u8>) -> ProgramResult {
     let accounts_iter = &mut accounts.iter();
 
     let main_acc = next_account_info(accounts_iter)?;
@@ -338,6 +289,95 @@ pub fn launch_lottery(program_id: &Pubkey, accounts: &[AccountInfo], hashes: Vec
     }
 
     let mut lottery_account = deserialize(&pda_acc.data.borrow()).unwrap();
+
+    let lifecycle_check = check_lottery_lifecycle(3, Option::Some(&lottery_account));
+    if lifecycle_check.is_err() {
+        return lifecycle_check;
+    }
+
+    // if complete lottery instruction was called before launch lottery or winner wasn't chosen
+    if lottery_account.winner == DEFAULT_WINNER_KEY {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let winner_acc = next_account_info(accounts_iter)?;
+    // checking winner account
+    if !winner_acc.is_writable || (winner_acc.key.clone() != lottery_account.winner) {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    lottery_account.lottery_state = LotteryState::COMPLETED;
+
+    if calculate_overall_donations(&lottery_account).is_none() {
+        return Err(ProgramError::Custom(200));
+    }
+
+    let overall_donations = calculate_overall_donations(&lottery_account).unwrap();
+    let fee: u64 = ((overall_donations as f64) * 0.01) as u64;
+    msg!("Overall lottery donations are {}", overall_donations);
+
+    msg!("Calculated fee is {}", fee);
+    let winner_lamports = overall_donations - fee;
+
+    if !LotteryAccount::check_pubkey(program_id, pda_acc.key) {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    // transfer lamports to winner account
+    if **pda_acc.try_borrow_lamports()? < winner_lamports {
+        return Err(ProgramError::InsufficientFunds);
+    }
+
+    **pda_acc.try_borrow_mut_lamports()? -= winner_lamports;
+    **winner_acc.try_borrow_mut_lamports()? += winner_lamports;
+
+    msg!("Transfered winner payment from: {:?} to: {:?}", pda_acc.key, winner_acc.key);
+
+    // transfer fees to main account
+    if **pda_acc.try_borrow_lamports()? < fee {
+        return Err(ProgramError::InsufficientFunds);
+    }
+
+    **pda_acc.try_borrow_mut_lamports()? -= fee;
+    **main_acc.try_borrow_mut_lamports()? += fee;
+
+    msg!("Transfered fee payment from: {:?} to: {:?}", pda_acc.key, main_acc.key);
+    msg!("Lottery account after changing state {:?}", lottery_account);
+
+    lottery_account.serialize(&mut &mut pda_acc.data.borrow_mut()[..])?;
+
+    Ok(())
+}
+
+/// Accounts expected:
+/// 0. `[signer]` Main account, owner of program
+/// 1. `[writable]` PDA account to transfer lamports from
+/// 2. `[]` System program
+pub fn launch_lottery(program_id: &Pubkey, accounts: &[AccountInfo], hashes: Vec<u8>) -> ProgramResult {
+    msg!("Executing launch lottery instruction!");
+
+    let accounts_iter = &mut accounts.iter();
+
+    let main_acc = next_account_info(accounts_iter)?;
+    // checking main account
+    if !main_acc.is_signer {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let pda_acc = next_account_info(accounts_iter)?;
+    // checking pda account
+    if !pda_acc.is_writable && pda_acc.owner != program_id {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+
+    msg!("Recieved hash string {:?}", hashes);
+
+    let mut lottery_account = deserialize(&pda_acc.data.borrow()).unwrap();
+
+    let lifecycle_check = check_lottery_lifecycle(2, Option::Some(&lottery_account));
+    if lifecycle_check.is_err() {
+        return lifecycle_check;
+    }
 
     let winner_num: usize = calculate_random_number(&hashes, lottery_account.participants.len().try_into().unwrap());
 

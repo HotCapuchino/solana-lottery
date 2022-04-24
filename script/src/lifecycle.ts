@@ -11,19 +11,21 @@ import {
 } from '@solana/web3.js';
 import path from 'path';
 import os from 'os';
-import { getPayer, getRpcUrl, getSizeOfAccount, writeLogs, createKeypairFromFile, getConfig, getLastBlockHashes } from './utils';
+import { getPayer, getRpcUrl, getSizeOfAccount, writeLogs, createKeypairFromFile, getConfig, startFetchingLastBlockHashes } from './utils';
 import {deserializeUnchecked} from 'borsh';
 import { fs } from 'mz';
 import { LotteryState, LotteryStruct, serializingSchema } from './state';
 import { BorshError } from 'borsh';
 import moment from 'moment';
-import { createDonateInstruction, createLaunchLotteryInstruction, createStartLotteryInstruction } from './instructions';
+import { createCompleteLotteryInstruction, createDonateInstruction, createLaunchLotteryInstruction, createStartLotteryInstruction } from './instructions';
 import {BN} from 'bn.js';
+import { clearInterval } from 'timers';
+import {eventEmitter} from './eventsHandler';
 
 interface AccountConfig {
   max_participants: number;
   lottery_duration: number;
-  blockhases_num: number;
+  blockhashes_num: number;
 }
 
 class LifeCycle {
@@ -46,6 +48,11 @@ class LifeCycle {
     private LOTTERY_SEED = "lottery";
     private accountSize: number | null = null;
     private accountConfig: AccountConfig | null = null;
+    private DEFAULT_WINNER_PUBLICKEY = Uint8Array.from(Array(32).fill(0));
+
+    constructor() {
+      this.asyncLotteryCallback.bind(this);
+    }
 
     /**
      * Establishing connection with RPC cluster
@@ -56,7 +63,7 @@ class LifeCycle {
       this.connection = new Connection(rpcUrl, 'confirmed');
       try {
           const version = await this.connection.getVersion();
-          writeLogs(`Connection to solana RPC cluster successfully established\n RPC URL: ${rpcUrl}, cluster version: ${version['solana-core']}}`)
+          // writeLogs(`Connection to solana RPC cluster successfully established\n RPC URL: ${rpcUrl}, cluster version: ${version['solana-core']}}`)
       } catch(e) {
           throw new Error("Solana cluster version exception: " + e?.message)
       }
@@ -71,21 +78,21 @@ class LifeCycle {
   
       try {
         this.accountConfig = await (getConfig(this.LOTTERY_CONFIG_PATH)) as unknown as AccountConfig;
+        console.log('account config')
       } catch(e) {
         throw new Error('Invalid config for lottery account! Make sure config have following fields:\nmax_participants of type number\nlottery_duration of type number\nblockhashes_num of type number');
       }
 
       this.accountSize = await getSizeOfAccount(this.LOTTERY_CONFIG_PATH);
-      writeLogs(`ACCOUNT SIZE: ${this.accountSize}`);
+      // writeLogs(`ACCOUNT SIZE: ${this.accountSize}`);
 
-      if (!this.payer) {
-        // Calculating min amount of lamports for the payer in order to account be rent exempt
-        fees += await this.connection.getMinimumBalanceForRentExemption(this.accountSize);
-        // Adding cost of transaction
-        fees += feeCalculator.lamportsPerSignature * 100; // wage
-  
-        this.payer = await getPayer(this.CONFIG_FILE_PATH);
-      }
+      // Calculating min amount of lamports for the payer in order to account be rent exempt
+      fees += await this.connection.getMinimumBalanceForRentExemption(this.accountSize);
+      // Adding cost of transaction
+      fees += feeCalculator.lamportsPerSignature * 100; // wage
+
+      this.payer = await getPayer(this.CONFIG_FILE_PATH);
+      console.log('payer', this.payer);
   
       // Only on localhost or testnet!!!
       let lamports = await this.connection.getBalance(this.payer.publicKey);
@@ -99,7 +106,7 @@ class LifeCycle {
           lamports = await this.connection.getBalance(this.payer.publicKey);
       }
   
-      writeLogs(`Using account: ${this.payer.publicKey.toBase58()} that has ${lamports / LAMPORTS_PER_SOL} SOL locked`);
+      // writeLogs(`Using account: ${this.payer.publicKey.toBase58()} that has ${lamports / LAMPORTS_PER_SOL} SOL locked`);
     }
 
     /**
@@ -126,7 +133,7 @@ class LifeCycle {
       } else if (!programInfo.executable) {
         throw new Error(`Program is not executable`);
       }
-      writeLogs(`Using program ${this.programId.toBase58()}`);
+      // writeLogs(`Using program ${this.programId.toBase58()}`);
 
       // Searching valid PDA key from lottery account
       this.lotteryPubkey = (await PublicKey.findProgramAddress([Buffer.from(this.LOTTERY_SEED, 'utf-8')], this.programId))[0];
@@ -135,15 +142,20 @@ class LifeCycle {
       const lotteryAccount = await this.connection.getAccountInfo(this.lotteryPubkey);
 
       if (lotteryAccount === null) {
-        writeLogs(`Creating account ${this.lotteryPubkey.toBase58()}`);
+        // writeLogs(`Creating account ${this.lotteryPubkey.toBase58()}`);
         await this.startLottery();
       } else {
         const lotteryAccount = await this.getLotteryAccount();
 
         if (lotteryAccount) {
-          if (lotteryAccount.lottery_state === LotteryState.COMPLETED) {
-            // we have to start lottery
-            await this.startLottery();
+          console.log('lottery account is:', lotteryAccount.lottery_state);
+          console.log('default winner', new PublicKey(this.DEFAULT_WINNER_PUBLICKEY).toBase58());
+          console.log('lottery winner', new PublicKey(lotteryAccount.winner).toBase58());
+          console.log('equals:', new PublicKey(lotteryAccount.winner).toBase58() === new PublicKey(this.DEFAULT_WINNER_PUBLICKEY).toBase58());
+          if (lotteryAccount.lottery_state === LotteryState.COMPLETED || new PublicKey(lotteryAccount.winner).toBase58() !== new PublicKey(this.DEFAULT_WINNER_PUBLICKEY).toBase58()) {
+            // we have to start lottery all over again
+            writeLogs('Starting lottery again...');
+            return await this.startLottery();
           } else {
             writeLogs('No need to start lottery!');
           }
@@ -180,12 +192,10 @@ class LifeCycle {
       const lotteryAccount = await this.getLotteryAccount();
 
       const isMaxAmountOfParticipantas = lotteryAccount.participants.size >= lotteryAccount.max_participants;
-      const isTimeUp = new BN(lotteryAccount.lottery_start).toNumber() + this.accountConfig.lottery_duration * 1000 <= moment().unix();
-      console.log('max participants:', isMaxAmountOfParticipantas);
-      console.log('lottery start:', isTimeUp);
+      const isTimeUp = new BN(lotteryAccount.lottery_start).toNumber() + this.accountConfig.lottery_duration <= moment().unix();
+
       if (isMaxAmountOfParticipantas || isTimeUp) {
         // we have to launch loterry
-        await this.launchLottery();
         return Promise.resolve();
       } else {
         return Promise.reject();
@@ -193,11 +203,13 @@ class LifeCycle {
     }
 
     /**
-     * Launching process of choosing winner of lottery
+     * Event listener, emits after Nth amount of blockhashes recieved
+     * @param eventObject - event object
      */
-    async launchLottery(): Promise<void> {
-      const blockhashes = await getLastBlockHashes(this.connection, this.accountConfig.blockhases_num);
-      const instructionData = createLaunchLotteryInstruction(blockhashes);
+    private asyncLotteryCallback(eventObject: {blockhashes: string[]}): void {
+      console.log("fetched blockhashes are", eventObject.blockhashes);
+
+      const instructionData = createLaunchLotteryInstruction(eventObject.blockhashes);
       const instruction = new TransactionInstruction({
         keys: [
           {pubkey: this.payer.publicKey, isSigner: true, isWritable: false},
@@ -206,40 +218,77 @@ class LifeCycle {
         programId: this.programId,
         data: instructionData,
       });
-      
-      return sendAndConfirmTransaction(this.connection, new Transaction().add(instruction), [this.payer], {commitment: "confirmed"})
+
+      console.log("Executing launch lottery instruction, data is", instruction);
+
+      sendAndConfirmTransaction(this.connection, new Transaction().add(instruction), [this.payer], {commitment: "confirmed"})
         .then(() => {
           // Start checking if winner was chosen
           const intervalID = setInterval(async () => {
             const lotteryAccount = await this.getLotteryAccount();
+            console.log('lotteryAccount', lotteryAccount);
 
-            if (lotteryAccount.winner && lotteryAccount.lottery_state === LotteryState.LAUCNHED) {
+            if (lotteryAccount.winner !== this.DEFAULT_WINNER_PUBLICKEY && lotteryAccount.lottery_state === LotteryState.LAUCNHED) {
               clearInterval(intervalID);
-              await this.completeLottery(lotteryAccount.winner);
+              const winnerPubkey = new PublicKey(lotteryAccount.winner);
+              // firing complete lottery event
+              eventEmitter.emitCompleteLotteryEvent({winner: winnerPubkey});
             }
           }, 1000);
-        });
+
+          // listen for complete lottery event to be fired
+          eventEmitter.onCompleteLotteryEvent(this.completeLottery.bind(this), intervalID);
+      }); 
+
+      console.log("Launch lottery was executed");
+    }
+
+    /**
+     * Launching process of choosing winner of lottery
+     */
+    async launchLottery(): Promise<void> {
+      const lotteryAccount = await this.getLotteryAccount();
+
+      if (lotteryAccount.lottery_state === LotteryState.LAUCNHED) {
+        this.completeLottery({winner: new PublicKey(lotteryAccount.winner)});
+      } else {
+        console.log('amount of blockhashes required:', this.accountConfig.blockhashes_num);
+        const intervalID = startFetchingLastBlockHashes(this.connection, this.accountConfig.blockhashes_num);
+  
+        // listen for blockhashes event to be fired
+        eventEmitter.onBlockHashesEvent(this.asyncLotteryCallback.bind(this), intervalID);
+      }
     }
 
     /**
      * Finishing lottery and transfer lamports from PDA account to winner account
      * @param lotteryWinner - Public key of lottery winner
      */
-    private async completeLottery(lotteryWinner: Uint8Array): Promise<void> {
+    private completeLottery(eventObject: {winner: PublicKey}): void {
+      console.log('winner pubkey is', eventObject.winner.toBase58());
+      const instructionData = createCompleteLotteryInstruction();
       const instruction = new TransactionInstruction({
         keys: [
           {pubkey: this.payer.publicKey, isSigner: true, isWritable: false},
           {pubkey: this.lotteryPubkey, isSigner: false, isWritable: true},
-          {pubkey: new PublicKey(lotteryWinner), isSigner: false, isWritable: true},
+          {pubkey: eventObject.winner, isSigner: false, isWritable: true},
           {pubkey: SystemProgram.programId, isSigner: false, isWritable: false},
         ],
         programId: this.programId,
+        data: instructionData,
       });
 
-      await sendAndConfirmTransaction(this.connection, new Transaction().add(instruction), [this.payer]);
-      writeLogs('Complete lottery transaction was completed');
-      const lotteryAccount = await this.getLotteryAccount();
-      writeLogs(`Lottery account after start lottery transaction: ${lotteryAccount}`);
+      sendAndConfirmTransaction(this.connection, new Transaction().add(instruction), [this.payer])
+      .then(() => {
+        writeLogs('Complete lottery transaction was completed');
+        this.getLotteryAccount()
+        .then((lotteryAccount) => {
+          console.log('Lottery account after start lottery transaction:', lotteryAccount);
+          // writeLogs('Lottery account after start lottery transaction:',);
+        }).finally(() => {
+          process.exit();
+        });
+      });
     }
 
     /**
@@ -258,11 +307,16 @@ class LifeCycle {
         data: instructionData
       });
 
-      await sendAndConfirmTransaction(this.connection, new Transaction().add(instruction), [this.payer]);
+      try {
+        await sendAndConfirmTransaction(this.connection, new Transaction().add(instruction), [this.payer]);
+      } catch (e) {
+        console.error('oops error:', e);
+      };
 
-      console.log('Start lottery transaction was completed');
+      writeLogs('Start lottery transaction was completed');
       const lotteryAccount = await this.getLotteryAccount();
-      console.log(`Lottery account after start lottery transaction: ${lotteryAccount}`);
+      console.log('Lottery account after start lottery transaction:', lotteryAccount);
+      // writeLogs(`Lottery account after start lottery transaction: `, );
     }
 
     /**
@@ -298,8 +352,12 @@ class LifeCycle {
       }
 
       for (let i = 0; i < instructions.length; i++) {
-        await sendAndConfirmTransaction(this.connection, new Transaction().add(instructions[i]), [participants[i]]);
-        console.log(`Donation from ${participants[i].publicKey} accepted!`);
+        try {
+          await sendAndConfirmTransaction(this.connection, new Transaction().add(instructions[i]), [participants[i]]);
+          console.log(`Donation from ${participants[i].publicKey} accepted!`);
+        } catch (e) {
+          console.error('error while donating tokens:', e);
+        }
       }
 
       const lottery_account = await this.getLotteryAccount();
